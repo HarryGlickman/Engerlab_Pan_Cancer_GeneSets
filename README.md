@@ -1,5 +1,3 @@
-Analysis code for manuscript titled Tumour-type-agnostic gene set scores predict progression following radiotherapy by Harry Glickman and Shirin Enger.
-
-Analysis code is contained in pan_cancer_merged_analysis.
+Analysis code for manuscript titled Precision radiotherapy biomarker researchers should incorporate pan-cancer information by Harry Glickman and Shirin Enger.
 
 Contact harry [dot[ glickman [at] mail [dot] mcgill [dot] ca with any questions. 
