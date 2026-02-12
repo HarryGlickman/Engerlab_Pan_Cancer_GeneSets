@@ -1,0 +1,1208 @@
+---
+title: "ARO_Response_1"
+output: pdf_document
+date: "2026-01-20"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = "/home/engerlab-2/Documents/gene_set_study/")
+```
+
+#setup
+```{r}
+library(tidyverse)
+library(survival)
+library(rms)
+```
+
+if doing gene set analysis, run this chunk first, then run the gene section, then unload these libraries (they interfere with tidyverse)
+```{r}
+library(singscore)
+library(GSEABase)
+library(msigdb)
+library(ExperimentHub)
+```
+
+#process mRNA data
+##load hallmark genes
+```{r}
+eh = ExperimentHub()
+query(eh , 'msigdb')
+msigdb.hs = getMsigdb(org = 'hs', id = 'SYM', version = '7.4')
+msigdb.hs
+listCollections(msigdb.hs)
+hallmarks <- subsetCollection(msigdb.hs, 'h')
+```
+
+check redundancy
+```{r}
+genes <- c()
+for (i in 1:50)
+{
+  hallmark <- hallmarks[i][[1]]@geneIds  #check the actual sets we want 
+  genes <- c(genes, hallmark)
+}
+x <- sort(table(genes), decreasing = T)
+x['TP53']
+table(table(genes))
+```
+
+##apply singscore algorithm in batches
+(this requires your mRNA files downloaded locally)
+```{r warning = FALSE}
+fraction_dataframe <- data.frame()
+setwd("./m11_zip")
+folders <- list.files()
+length(folders)
+index = 1
+for (folder in folders)
+{
+  print(index)
+  setwd(folder)
+  patient_id <- folder
+  tsv_file <- list.files(pattern = "\\.tsv$", full.names = TRUE, recursive = TRUE)[1]
+  test_tsv <- read.table(tsv_file, sep = '\t', header = TRUE)
+  
+  length_tsv <- length(test_tsv$gene_name)
+  test_tsv_mod <- test_tsv %>% dplyr::select(gene_name, tpm_unstranded)
+  test_tsv_mod <- test_tsv_mod[5:length_tsv, ]
+  test_tsv_mod <- test_tsv_mod %>% distinct(gene_name, .keep_all = TRUE)
+  
+  test_tsv_1col <- data.frame(test_tsv_mod$tpm_unstranded)
+  rownames(test_tsv_1col) <- test_tsv_mod$gene_name
+  test_tsv_1col_filter <- test_tsv_1col %>% filter(test_tsv_mod.tpm_unstranded != 0)
+  rankData_test <- rankGenes(test_tsv_1col_filter)
+  
+  names <- c()
+  scores_dir <-  c()
+  scores_undir <-  c()
+  dispersions_dir <- c()
+  dispersions_undir <- c()
+  
+  for (hallmarkNumber in 1:50)
+  {
+    h1 <- hallmarks[hallmarkNumber] #get the sets we want
+    h1data <- h1[[1]] #this is a gene set
+    name <- GSEABase::setName(h1data)
+    score_dir <- simpleScore(rankData_test, h1data, knownDirection = TRUE)$TotalScore
+    score_undir <- simpleScore(rankData_test, h1data, knownDirection = FALSE)$TotalScore
+    dispersion_dir <- simpleScore(rankData_test, h1data, knownDirection = TRUE)$TotalDispersion
+    dispersion_undir <- simpleScore(rankData_test, h1data, knownDirection = FALSE)$TotalDispersion
+    names <- c(names, name)
+    scores_dir <- c(scores_dir, score_dir)
+    scores_undir <- c(scores_undir, score_undir)
+    dispersions_dir <- c(dispersions_dir, dispersion_dir)
+    dispersions_undir <- c(dispersions_undir, dispersion_undir)
+  }
+  
+
+  #add to combined dataframe 
+  data_list <- c(patient_id)
+  names(data_list) <- "Patient_ID"
+  for (i in 1:50) {
+    data_list[paste0(names[i], "_Score_Dir")] <- scores_dir[i]
+    data_list[paste0(names[i], "_Score_Undir")] <- scores_undir[i]
+    data_list[paste0(names[i], "_Dispersion_Dir")] <- dispersions_dir[i]
+    data_list[paste0(names[i], "_Dispersion_Undir")] <- dispersions_undir[i]
+  }
+  
+  df <- as.data.frame(t(data_list), stringsAsFactors = FALSE)
+  df[-1] <- lapply(df[-1], as.numeric)
+  fraction_dataframe <- rbind(fraction_dataframe, df)
+  
+  setwd("..")
+  
+  index = index + 1
+}
+
+write.csv(fraction_dataframe, "m11_zip_extracted.csv")
+```
+
+##merge batches
+```{r}
+big_df <- data.frame()
+setwd("./outputs")
+files = list.files()
+for (file in files)
+{
+  temp_csv <- read.csv(file)
+  big_df <- rbind(big_df, temp_csv)
+}
+
+write.csv(big_df, "full_gene_data.csv")
+```
+
+##add patient IDs
+```{r}
+file_mappings <- read.csv("json_file_mappings.csv")
+file_mappings <- file_mappings %>% rename(case_id = patients)
+file_mappings <- file_mappings %>% mutate(case_id = substr(case_id, start = 1, stop = 12))
+
+big_df <- read.csv("full_gene_data.csv")
+big_df <- big_df[, -c(1,2)]
+big_df <- big_df %>% rename(files = Patient_ID)
+
+json_merged <- left_join(big_df, file_mappings, by = "file_ids")
+
+write.csv(json_merged, "gene_data_with_ids.csv")
+```
+
+
+##replace above code for RSI calculation
+
+Gene expressions for the 10 genes rank-ordered, with lowest expression ranked 1.
+
+then apply: 
+RSI = 
+- 0.0098009 * AR 
++ 0.0128283 * JUN
++ 0.0254552 * STAT1
+- 0.0017589 * PRKCB 
+- 0.0038171 * RELA
++ 0.1070213 * ABL1
+- 0.0002509 * SUMO1
+- 0.0092431 * CDK1 
+- 0.0204469 * HDAC1 
+- 0.0441683 * IRF1
+
+```{r warning = FALSE}
+fraction_dataframe <- data.frame()
+setwd("./m12_zip")
+folders <- list.files()
+length(folders)
+index = 1
+for (folder in folders)
+{
+  if(index %% 100 == 0){print(index)}
+  setwd(folder)
+  patient_id <- folder
+  tsv_file <- list.files(pattern = "\\.tsv$", full.names = TRUE, recursive = TRUE)[1]
+  test_tsv <- read.table(tsv_file, sep = '\t', header = TRUE)
+  
+  length_tsv <- length(test_tsv$gene_name)
+  test_tsv_mod <- test_tsv %>% dplyr::select(gene_name, tpm_unstranded)
+  test_tsv_mod <- test_tsv_mod[5:length_tsv, ]
+  test_tsv_mod <- test_tsv_mod %>% distinct(gene_name, .keep_all = TRUE)
+  
+  test_tsv_1col <- data.frame(test_tsv_mod$tpm_unstranded)
+  rownames(test_tsv_1col) <- test_tsv_mod$gene_name
+  test_tsv_1col_filter <- test_tsv_1col %>% filter(test_tsv_mod.tpm_unstranded != 0)
+  
+  
+  rsi_genes <- c("AR", "JUN", "STAT1", "PRKCB", "RELA", "ABL1", "SUMO1", "CDK1", "HDAC1", "IRF1")
+  rsi_coefs <- c(-0.0098009, 0.0128283, 0.0254552, -0.0017589, -0.0038171, 0.1070213, -0.0002509, -0.0092431, -0.0204469, 0.0441683)
+  seq_10 <- seq(1,10)
+  exprs <- c()
+  for(gene in rsi_genes)
+  {
+    expr <- test_tsv_1col[gene,]
+    exprs <- c(exprs, expr)
+  }
+  
+  comb <- data.frame(rsi_genes, rsi_coefs, exprs)
+  comb <- comb %>% arrange(exprs)
+  comb <- cbind(comb, seq_10)
+  comb <- comb %>% mutate(val = seq_10 * rsi_coefs)
+  rsi <- sum(comb$val)
+  df <- data.frame("Patient_ID" = patient_id, "RSI" = rsi)
+  
+  fraction_dataframe <- rbind(fraction_dataframe, df)
+  
+  setwd("..")
+  
+  index = index + 1
+}
+```
+
+#create data files for further processing
+##clinical variables
+```{r}
+mmc_data <- read.csv("mmc1.csv")
+mmc_small <- mmc_data %>% select(bcr_patient_barcode,type, age_at_initial_pathologic_diagnosis, gender, ajcc_pathologic_tumor_stage, clinical_stage, histological_type, histological_grade, initial_pathologic_dx_year, PFI, PFI.time, OS, OS.time)
+#for LAML, no PFI, so replace with OS
+mmc_small <- mmc_small %>% mutate(PFI = ifelse(type == "LAML", OS, PFI))
+mmc_small <- mmc_small %>% select(-c(OS, OS.time))
+mmc_mut <- mmc_small
+mmc_mut <- mmc_mut %>% rename(age = age_at_initial_pathologic_diagnosis, path_stage = ajcc_pathologic_tumor_stage, year = initial_pathologic_dx_year, case = bcr_patient_barcode)
+```
+
+##missingness
+parse and merge missingness indicators
+```{r}
+mmc_mut <- mmc_mut %>% mutate(
+    type = ifelse(type == "#N/A", NA, type), 
+    age = ifelse(age == "#N/A", NA, age), 
+    gender = ifelse(gender == "#N/A", NA, gender), 
+    path_stage = ifelse(path_stage == "#N/A", NA, path_stage), 
+    clinical_stage = ifelse(clinical_stage == "#N/A", NA, clinical_stage), 
+    histological_type = ifelse(histological_type == "#N/A", NA, histological_type), 
+    histological_grade = ifelse(histological_grade == "#N/A", NA, histological_grade), 
+    year = ifelse(year == "#N/A", NA, year), 
+    PFI = ifelse(PFI == "#N/A", NA, PFI), 
+    PFI.time = ifelse(PFI.time == "#N/A", NA, PFI.time)
+)
+mmc_mut <- mmc_mut %>% mutate(
+  path_stage = ifelse(path_stage %in% c("[Not Available]", "[Not Applicable]", "[Discrepancy]", "[Unknown]", "Stage X"), NA, path_stage), 
+  clinical_stage = ifelse(clinical_stage %in% c("[Not Available]", "[Not Applicable]", "[Discrepancy]", "[Unknown]"), NA, clinical_stage)
+)
+```
+
+##create 4 stage categories
+```{r}
+
+stage1path <- c("I/II NOS", "IS", "Stage I", "Stage IA", "Stage IB")
+stage2path <- c("Stage II", "Stage IIA", "Stage IIB", "Stage IIC")
+stage3path <- c("Stage III", "Stage IIIA", "Stage IIIB", "Stage IIIC")
+stage4path <- c("Stage IV", "Stage IVA", "Stage IVB", "Stage IVC")
+
+stage1clin <- c("I", "Stage I", "Stage IA", "Stage IA1", "Stage IA2", "Stage IB", "Stage IB1", "Stage IB2", "Stage IC", "Stage IS")
+stage2clin <- c("IIa", "IIb", "Stage II", "Stage IIA", "Stage IIA1", "Stage IIA2", "Stage IIB", "Stage IIC")
+stage3clin <- c("III", "Stage III", "Stage IIIA", "Stage IIIB", "Stage IIIC", "Stage IIIC1", "Stage IIIC2")
+stage4clin <- c("IVa", "IVb", "Stage IV", "Stage IVA", "Stage IVB", "Stage IVC")
+
+
+mmc_mut <- mmc_mut %>% mutate( 
+  path_stage = ifelse(path_stage %in% stage1path, "Stage 1", 
+                      ifelse(path_stage %in% stage2path, "Stage 2", 
+                             ifelse(path_stage %in% stage3path, "Stage 3", 
+                                    ifelse(path_stage %in% stage4path, "Stage 4", NA)))))
+mmc_mut <- mmc_mut %>% mutate( 
+  clinical_stage = ifelse(clinical_stage %in% stage1clin, "Stage 1", 
+                      ifelse(clinical_stage %in% stage2clin, "Stage 2", 
+                             ifelse(clinical_stage %in% stage3clin, "Stage 3", 
+                                    ifelse(clinical_stage %in% stage4clin, "Stage 4", NA)))))
+mmc_mut <- mmc_mut %>% mutate(merged_stage = ifelse(is.na(path_stage), clinical_stage, path_stage))                        
+```
+
+```{r}
+mmc_premice <- mmc_mut
+mmc_premice_save <- write.csv(mmc_premice, "mmc_premice_save.csv")
+```
+gene_data_all
+##select primary tumours
+```{r}
+gene_data_ids <- read.csv("gene_data_with_ids.csv") #made above in first steps
+manifest_full <- read_tsv("tumor_type_manifest.txt") #manifest of primary tumours
+gene_ids_tumour <- gene_data_ids %>% filter(file_ids %in% manifest_full$id)
+gene_ids_tumour <- gene_ids_tumour %>% select(-c(X, file_ids, ids))
+```
+
+##clinical treatments
+```{r}
+full_clinical_data <- read.csv("full_clinical_file.csv")
+full_clinical_data <- full_clinical_data %>% rename(case = case_submitter_id)
+
+full_clinical_radio <- full_clinical_data %>% filter(treatment_type == "Radiation Therapy, NOS")
+full_clinical_radio <- full_clinical_radio %>% select(case, treatment_or_therapy)
+full_clinical_radio <- full_clinical_radio %>% rename(case_id = case, radiotherapy = treatment_or_therapy)
+
+full_clinical_chemo <- full_clinical_data %>% filter(treatment_type == "Pharmaceutical Therapy, NOS")
+full_clinical_chemo <- full_clinical_chemo %>% select(case, treatment_or_therapy)
+full_clinical_chemo <- full_clinical_chemo %>% rename(case_id = case, chemotherapy = treatment_or_therapy)
+
+full_clinical_merged <- left_join(full_clinical_radio, full_clinical_chemo, by = join_by(case_id))
+
+gene_data_merged <- left_join(full_clinical_merged, gene_ids_tumour, by = join_by(case_id))
+```
+
+##process
+merge gene data across multiple samples
+###genes
+```{r}
+gene_data_all <- gene_data_merged %>% rename(case = case_id)
+gene_data_all <- gene_data_all %>% group_by(case) %>% 
+  summarise(
+    radiotherapy = first(radiotherapy),
+    chemotherapy = first(chemotherapy),
+    across(where(is.numeric), mean, na.rm = TRUE)) #am averaging all TUMOUR samples here
+
+gene_data_all <- gene_data_all %>% mutate(radiotherapy = ifelse(radiotherapy == "not reported", NA, radiotherapy), chemotherapy = ifelse(chemotherapy == "not reported", NA, chemotherapy))
+```
+
+###missingness
+```{r}
+mmc_premice <- read.csv("mmc_premice_save.csv")
+mmc_premice <- mmc_premice %>% select(-c(X))
+
+pre_mice_dataframe <- left_join(gene_data_all, mmc_premice, by = join_by(case))
+
+#exclude missing outcomes
+pre_mice_dataframe <- pre_mice_dataframe %>% filter(!is.na(PFI)) %>% filter(!is.na(PFI.time)) 
+
+#exclude missing genes
+pre_mice_dataframe <- pre_mice_dataframe %>% filter(!is.na(HALLMARK_TNFA_SIGNALING_VIA_NFKB_Score_Dir))
+
+pre_mice_rt <- pre_mice_dataframe %>% filter(radiotherapy == "yes")
+pre_mice_rt_complete <- pre_mice_rt %>% drop_na(any_of(c("type", "merged_stage", "age", "gender")))
+```
+
+11080 patients with clinical data
+10907 after deleting missing outcomes = 173 no outcomes
+10271 with genomic data = 636 no gene expression
+3269 with confirmed radiotherapy = 7002 no RT or 
+2797 after missingness for age, stage, or gender = 472 incomplete data
+
+###grade (for lgg)
+```{r}
+#process grade
+hist_na <- c("[Discrepancy]", "[Not Available]", "[Unknown]", "GX", "GB")
+table(pre_mice_dataframe$histological_grade)
+pre_mice_dataframe <- pre_mice_dataframe %>% mutate(histological_grade = ifelse(histological_grade %in% hist_na, NA, ifelse(histological_grade == "Low Grade", "G1", ifelse(histological_grade == "High Grade", "G3", histological_grade))))
+#Low and High refer only to BLCA - Low grade is the same as grade 1. High grade is the same as grade 3.
+
+#change types
+pre_mice_dataframe <- pre_mice_dataframe %>% mutate(type = as.factor(type), age = as.numeric(age), gender = as.factor(gender), path_stage = as.factor(path_stage), clinical_stage = as.factor(clinical_stage), histological_grade = as.factor(histological_grade), year = as.numeric(year), PFI = as.numeric(PFI), PFI.time = as.numeric(PFI.time), merged_stage = as.factor(merged_stage))
+
+#to include LGG, use grade instead of stage
+pre_mice_complete <- pre_mice_dataframe %>% mutate(histological_grade = ifelse(histological_grade == "G1", "Stage 1", ifelse(histological_grade == "G2", "Stage 2", ifelse(histological_grade == "G3", "Stage 3", ifelse(histological_grade == "G4", "Stage 4", NA)))))
+pre_mice_complete <- pre_mice_complete %>% mutate(merged_stage = as.character(merged_stage))
+pre_mice_complete <- pre_mice_complete %>% mutate(merged_stage = ifelse(type == "LGG", histological_grade, merged_stage))
+pre_mice_complete <- pre_mice_complete %>% mutate(merged_stage = as.factor(merged_stage))
+
+#clean 
+pre_mice_complete <- pre_mice_complete %>% select(-c(clinical_stage, path_stage))
+pre_mice_complete <- pre_mice_complete %>% select(!contains("Undir"))
+```
+
+
+##fix data types
+```{r}
+write.csv(pre_mice_complete, "pre_mice_complete_oct_20.csv")
+pre_mice <- read.csv("pre_mice_complete_oct_20.csv")
+pre_mice <- pre_mice %>% select(-c(X, X.1))
+pre_mice <- pre_mice %>% mutate(type = as.factor(type), age = as.numeric(age), gender = as.factor(gender), histological_grade = as.factor(histological_grade), year = as.numeric(year), PFI = as.numeric(PFI), PFI.time = as.numeric(PFI.time), merged_stage = as.factor(merged_stage), radiotherapy = as.factor(radiotherapy), chemotherapy = as.factor(chemotherapy))
+```
+
+#patient characteristics
+##table 1 - patient characteristics
+
+```{r}
+pre_mice_rt <- pre_mice %>% filter(radiotherapy == "yes")
+pre_mice_rt_complete <- pre_mice_rt %>% drop_na(any_of(c("type", "merged_stage", "age", "gender")))
+sort(table(pre_mice_rt$type))
+```
+
+
+```{r}
+examine_types <-  c("BRCA", "CESC", "HNSC", "LGG", "LUAD","SKCM", "THCA", "UCEC")
+tbl1_df <- pre_mice_rt %>% mutate(type = as.character(type))
+tbl1_df <- tbl1_df %>% mutate(type = ifelse(type %in% examine_types, type, "OTHER"))
+tbl1_df <- tbl1_df %>% mutate(PFI.time != 0)
+```
+
+
+```{r}
+to_make_tbl1 <- c("BRCA", "CESC", "HNSC", "LGG", "LUAD","SKCM", "THCA", "UCEC", "OTHER")
+df <- data.frame()
+for (typeC in to_make_tbl1)
+{
+  typeData <- tbl1_df %>% filter(type == typeC)
+  complete <- typeData %>% drop_na(any_of(c("age", "merged_stage", "gender")))
+  complete_n <- nrow(complete)
+  # print(typeC)
+  # print(table(typeData$PFI))
+  # print(mean(typeData$PFI.time))
+  # print(sd(typeData$PFI.time))
+  # print(mean(typeData$age))
+  # print(sd(typeData$age))
+  # print(table(typeData$merged_stage))
+  # print(table(typeData$gender))
+  samp_low = round(sum(typeData$PFI)/20)
+  samp_high = round(sum(typeData$PFI)/10)
+  df_type <- data.frame(Total_N = nrow(typeData), 
+                        PFI_1 =  table(typeData$PFI)['1'], 
+                        PFI_0 = table(typeData$PFI)['0'], 
+                        PFI_mean_sd = paste(round(mean(typeData$PFI.time), 2), " (", round(sd(typeData$PFI.time), 2), ")", sep = ""),
+                        #samp_size = paste(deg_free, " (", epp, ")", sep = ""), 
+                        samp_size = paste(samp_low, " - ", samp_high, sep = ""),
+                        complete_size = complete_n,
+                        age_mean_sd = paste(round(mean(typeData$age, na.rm = T), 2), " (", round(sd(typeData$age, na.rm = T), 2), ")", sep = ""), 
+                        stage_1 = table(typeData$merged_stage)['Stage 1'], 
+                        stage_2 = table(typeData$merged_stage)['Stage 2'], 
+                        stage_3 = table(typeData$merged_stage)['Stage 3'], 
+                        stage_4 = table(typeData$merged_stage)['Stage 4'], 
+                        gender_M =  table(typeData$gender)['MALE'], 
+                        gender_F = table(typeData$gender)['FEMALE'])
+  df <- rbind(df, df_type)
+}
+
+  complete <- tbl1_df %>% drop_na(any_of(c("age", "merged_stage", "gender")))
+  complete_n <- nrow(complete)
+
+  samp_low = round(sum(tbl1_df$PFI)/20)
+  samp_high = round(sum(tbl1_df$PFI)/10)
+  df_all <- data.frame(Total_N = nrow(tbl1_df), 
+                       PFI_1 =  table(tbl1_df$PFI)['1'], 
+                        PFI_0 = table(tbl1_df$PFI)['0'], 
+                        PFI_mean_sd = paste(round(mean(tbl1_df$PFI.time), 2), " (", round(sd(tbl1_df$PFI.time), 2), ")", sep = ""),
+                        samp_size = paste(samp_low, " - ", samp_high, sep = ""),
+                        complete_size = complete_n,
+                        age_mean_sd = paste(round(mean(tbl1_df$age, na.rm = T), 2), " (", round(sd(tbl1_df$age, na.rm = T), 2), ")", sep = ""), 
+                        stage_1 = table(tbl1_df$merged_stage)['Stage 1'], 
+                        stage_2 = table(tbl1_df$merged_stage)['Stage 2'], 
+                        stage_3 = table(tbl1_df$merged_stage)['Stage 3'], 
+                        stage_4 = table(tbl1_df$merged_stage)['Stage 4'], 
+                        gender_M =  table(tbl1_df$gender)['MALE'], 
+                        gender_F = table(tbl1_df$gender)['FEMALE'])
+  df <- rbind(df, df_all)
+  
+rownames_tbl1 <- c("BRCA", "CESC", "HNSC", "LGG", "LUAD","SKCM", "THCA", "UCEC", "OTHER", "ALL")
+rownames(df) = rownames_tbl1
+df
+```
+
+```{r}
+getwd()
+write.csv(df, "table1.csv")
+```
+
+##figure 1 - genes heat map
+
+```{r}
+pre_mice_rt <- pre_mice %>% filter(radiotherapy == "yes")
+pre_mice_rt_complete <- pre_mice_rt %>% drop_na(any_of(c("type", "merged_stage", "age", "gender")))
+all_genes <- colnames(pre_mice)[4:103]
+```
+
+
+```{r}
+short_all_genes <- c()
+for (i in 1:100)
+{
+  str = substr(all_genes[i], 10, nchar(all_genes[i])-4)
+  str <- gsub("_", " ", str)
+  short_all_genes <- c(short_all_genes, str)
+}
+
+gene_map <- setNames(short_all_genes, all_genes)
+```
+
+
+```{r}
+examine_types <-  c("BRCA", "CESC", "HNSC", "LGG", "LUAD","SKCM", "THCA", "UCEC")
+fig_1_df <- pre_mice_rt %>% mutate(type = as.character(type))
+fig_1_df <- fig_1_df %>% mutate(PFI.time != 0)
+fig_1_df <- fig_1_df %>% mutate(type = ifelse(type %in% examine_types, type, "OTHER"))
+
+#scale across all genes
+df_scaled <- fig_1_df %>%
+  mutate(across(
+    all_of(all_genes),
+    ~ scale(.)[,1])) 
+
+#summarize by type and PFI
+gene_means <- df_scaled %>%
+  group_by(type, PFI) %>%
+  summarise(across(all_of(all_genes), mean, na.rm = TRUE), .groups = "drop")
+
+#summarize just by outcome (for final column)
+all_means <- df_scaled %>%
+  group_by(PFI) %>%
+  summarise(across(all_of(all_genes), mean, na.rm = TRUE), .groups = "drop") %>%
+  mutate(type = "ALL")
+
+gene_means <- bind_rows( #combine those two
+  gene_means,   
+  all_means
+)
+
+gene_means_long <- gene_means %>%
+  pivot_longer(cols = all_of(all_genes),
+               names_to = "gene",
+               values_to = "mean_expr")
+
+gene_means_long <- gene_means_long %>% #make good labels
+    mutate(
+    type_outcome = paste(type, PFI, sep = ": "),
+    type_outcome = factor(
+      type_outcome,
+      levels = expand.grid(
+        type = sort(unique(type)),
+        PFI  = sort(unique(PFI))
+      ) %>%
+        transmute(label = paste(type, PFI, sep = ": ")) %>%
+        pull(label)
+    )
+  )
+
+#("BRCA", "CESC", "HNSC", "LGG", "LUAD","SKCM", "THCA", "UCEC")
+gene_means_long$type_outcome <- factor( #set order
+  gene_means_long$type_outcome,
+  levels = c(
+    "BRCA: 0", "BRCA: 1",
+    "CESC: 0", "CESC: 1",
+    "HNSC: 0", "HNSC: 1", 
+     "LGG: 0", "LGG: 1", 
+     "LUAD: 0", "LUAD: 1", 
+     "SKCM: 0", "SKCM: 1", 
+     "THCA: 0", "THCA: 1", 
+    "UCEC: 0", "UCEC: 1",
+     "OTHER: 0", "OTHER: 1", 
+    "ALL: 0", "ALL: 1"
+    
+  )
+)
+
+gene_means_long <- gene_means_long %>% #gene labels
+  mutate(gene = gene_map[gene])
+
+gene_means_long <- gene_means_long %>% 
+  mutate(gene = factor(gene, levels = sort(unique(gene), decreasing = T)))
+
+line_positions <- seq(0.5, by = 2, length.out = 9 + 2) #make black lines
+
+gene_order <- gene_means_long %>% #sort genes
+  filter(type == "ALL") %>%
+  dplyr::select(gene, PFI, mean_expr) %>%
+  pivot_wider(names_from = PFI, values_from = mean_expr) %>%
+  mutate(diff = `1` - `0`) %>%
+  arrange((diff)) %>%
+  pull(gene)
+
+gene_means_long$gene <- factor(
+  gene_means_long$gene,
+  levels = gene_order
+)
+
+ggplot(gene_means_long, aes(x = type_outcome, y = gene, fill = mean_expr)) + #make the plot
+  geom_tile() +
+  geom_vline(
+    xintercept = line_positions,
+    color = "black",
+    linewidth = 0.6
+  ) +
+  scale_fill_viridis_c(option = "B") +  # perceptually uniform
+  theme_minimal(base_size = 12) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    axis.text.y = element_text(size = 6)  # reduce if 100 genes
+  ) +
+  labs(
+    x = "Cancer Type & Outcome",
+    y = "Gene",
+    fill = "Standardized Mean Value",
+    title = "Standardized Mean Gene Set Parameter Value by Cancer Type and Outcome"
+  )
+
+ggsave("gene_plot.pdf", width = 12, height = 16)
+ggsave("gene_plot.png", width = 12, height = 16)
+```
+
+
+#analysis
+##full pan-cancer fit
+
+```{r}
+pre_mice_rt <- pre_mice %>% filter(radiotherapy == "yes")
+complete_cases_rt <- pre_mice_rt
+complete_cases_rt <- complete_cases_rt %>% filter(PFI.time != 0)
+complete_cases_rt <- complete_cases_rt %>% mutate(type = as.character(type))
+complete_cases_rt <- complete_cases_rt %>% mutate(type = ifelse(type %in% examine_types, type, "OTHER"))
+complete_cases_rt <- complete_cases_rt %>% mutate(type = as.factor(type))
+
+
+scaled_df <- complete_cases_rt %>% mutate(across(all_genes, ~scale(., center = T, scale = T)))
+formula_all <- as.formula(paste("Surv(PFI.time, PFI) ~", paste(all_genes,  collapse = " + "), "+ type"))
+cox_all <- coxph(formula_all, data = scaled_df)
+summary(cox_all)
+```
+
+```{r}
+#plot pan cancer coxph
+beta <- coef(cox_all)
+ci   <- confint(cox_all)
+pval <- summary(cox_all)$coefficients[, "Pr(>|z|)"]
+
+names <- names(beta)
+names_short <- c()
+for (i in 1:length(names))
+{
+  if(names[i] %in% all_genes)
+    {
+      str = substr(names[i], 10, nchar(names[i])-4)
+      str <- gsub("_", " ", str)
+      names_short <- c(names_short, str)
+    }
+  else
+  {
+    names_short <- c(names_short, names[i] )
+  }
+}
+
+# Build final table (HR scale, rounded)
+final_table <- data.frame(
+  variable = names_short,
+  estimate = round(exp(beta), 2),
+  CI_low   = round(exp(ci[, 1]), 2),
+  CI_high  = round(exp(ci[, 2]), 2),
+  pval = pval,
+ # p_value = formatC(pval, format = "e", digits = 2),
+  row.names = NULL
+)
+
+final_table$p_value_fmt <- ifelse(final_table$pval < 0.001, "p < 0.001",
+                         paste("p = ", formatC(final_table$pval, format = "f", digits = 3), sep = ""))
+# final_table[] <- lapply(final_table, function(x)
+#   if (is.numeric(x)) formatC(x, format = "f", digits = 2) else x
+# )
+
+final_table <- final_table %>% mutate(toPrint = paste(estimate, " [", CI_low, " - ", CI_high, "] ", p_value_fmt, sep = ""))
+final_table <- final_table %>% select(variable, toPrint)
+
+# Write to CSV
+write.csv(final_table, "pan_cancer_coxph_results.csv", row.names = FALSE)
+
+```
+
+
+##KM
+
+```{r}
+library(ggsurvfit)
+library(survminer)
+library(caret)
+
+examine_types <-  c("BRCA", "CESC", "HNSC", "LGG", "LUAD","SKCM", "THCA", "UCEC")
+
+pre_mice_rt <- pre_mice %>% filter(radiotherapy == "yes")
+complete_cases_rt <- pre_mice_rt #%>% drop_na(any_of(c("type", "merged_stage", "age", "gender")))
+complete_cases_rt <- complete_cases_rt %>% filter(PFI.time != 0)
+
+complete_cases_rt <- complete_cases_rt %>% mutate(type = as.character(type))
+complete_cases_rt <- complete_cases_rt %>% mutate(type = ifelse(type %in% examine_types, type, "OTHER"))
+complete_cases_rt <- complete_cases_rt %>% mutate(type = as.factor(type))
+
+merged_predictions <- data.frame()
+plots = list()
+
+i = 1
+for (typeC in examine_types)
+{
+  type_data <- complete_cases_rt %>% filter(type == typeC) #cases of the evaluation type
+  non_type_data <- complete_cases_rt %>% filter(type != typeC) #all other cases
+  
+  formula_all <- as.formula(paste("Surv(PFI.time, PFI) ~", paste(all_genes,  collapse = " + "), "+ type"))
+  cox_pan_cancer <- coxph(formula_all, data = non_type_data)
+    
+  test_pan_predictions <- predict(cox_pan_cancer, type = "lp", newdata = type_data)
+    test_pan_predictions <- as.numeric(test_pan_predictions)
+    type_data$pan_predictions <- test_pan_predictions
+  
+
+  plot_predictions <- type_data
+  median_pan <- median(plot_predictions$pan_predictions)
+  plot_predictions <- plot_predictions %>% mutate(binary_pan = ifelse(pan_predictions < median_pan, 0, 1))
+  plot_predictions <- plot_predictions %>% mutate(PFI.time = PFI.time / 365.25) #put time into years
+  fit <- survfit(Surv(PFI.time, PFI) ~ binary_pan, data = plot_predictions)
+  survPlot <- (ggsurvplot(fit, conf.int = T, pval = T, risk.table = T, tables.height = 0.3, xlim = c(0,5), break.time.by = 0.5, xlab = "Time (years)", legend.title = "Pan-Cancer Risk", legend.labs = c("Low Risk", "High Risk"), title = typeC)) #legend = none so we can make shared legend later
+
+  plots[[i]] = survPlot
+ print(survPlot) 
+ 
+   merged_predictions <- rbind(merged_predictions, type_data)
+   
+  individual_cox <- coxph(Surv(PFI.time, PFI) ~ pan_predictions, data = type_data)
+  print(typeC)
+  print(summary(individual_cox))
+  
+       type_data <- type_data %>% drop_na(any_of(c("type", "merged_stage", "age", "gender"))) 
+   
+      if (typeC == "BRCA" || typeC == "CESC" || typeC == "UCEC") #sex-specific cancers, no gender var
+     {
+          individual_cox_2 <- coxph(Surv(PFI.time, PFI) ~ age + merged_stage + pan_predictions, data = type_data)
+      }else
+      {
+        individual_cox_2 <- coxph(Surv(PFI.time, PFI) ~ age + gender + merged_stage + pan_predictions, data = type_data)
+      }
+
+  i = i + 1
+}
+```
+
+
+```{r}
+surv_list <- plots
+plot_list <- lapply(surv_list, function(x) x$plot)
+
+combined_plot <- arrange_ggsurvplots(
+  surv_list,
+  ncol = 2,
+  nrow = 4,
+  risk.table.height = 0.25,
+  legend = "bottom"
+)
+
+ggsave(
+  "survival_panels_with_tables.pdf",
+  combined_plot,
+  device = cairo_pdf,
+  width = 12,
+  height = 24,
+  units = "in"
+)
+
+ggsave(
+  "survival_panels_with_tables.png",
+  combined_plot,
+  device = "png",
+  width = 12,
+  height = 24,
+  units = "in"
+)
+```
+
+
+###merged predictions boxplots
+```{r}
+merged_predictions %>%
+  mutate(
+    type = factor(type),
+    PFI  = factor(PFI, levels = c(0, 1), labels = c("PFI = 0", "PFI = 1"))
+  ) %>%
+  ggplot(aes(x = type, y = pan_predictions, fill = PFI)) +
+  geom_boxplot(
+    position = position_dodge(width = 0.8),
+    outlier.alpha = 0.4
+  ) +
+  labs(
+    x = "Cancer type",
+    y = "Linear Predictions",
+    fill = "Outcome"
+  ) +
+  theme_bw() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    panel.grid.major.x = element_blank()
+  )
+
+```
+
+"The lower and upper hinges correspond to the first and third quartiles (the 25th and 75th percentiles)."
+"The upper whisker extends from the hinge to the largest value no further than 1.5 * IQR from the hinge (where IQR is the inter-quartile range, or distance between the first and third quartiles). The lower whisker extends from the hinge to the smallest value at most 1.5 * IQR of the hinge. Data beyond the end of the whiskers are called "outlying" points and are plotted individually."
+
+####with wixocon test
+```{r}
+library(ggpubr)
+merged_predictions %>%
+  mutate(
+    type = factor(type),
+    PFI  = factor(PFI, levels = c(0, 1), labels = c("PFI = 0", "PFI = 1"))
+  ) %>%
+  ggplot(aes(x = type, y = pan_predictions, fill = PFI)) +
+  
+  geom_boxplot(
+    position = position_dodge(width = 0.8),
+    outlier.alpha = 0.4
+  ) +
+  
+  stat_compare_means(
+    aes(group = PFI),
+    method = "wilcox.test",     # or "t.test"
+    label = "p.signif",         # stars: *, **, ***
+    hide.ns = TRUE              # hide "ns"
+  ) +
+  
+  labs(
+    x = "Cancer type",
+    y = "Pan prediction",
+    fill = "Outcome"
+  ) +
+  
+  theme_bw() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    panel.grid.major.x = element_blank()
+  )
+ggsave("LP_Boxplots.pdf", width = 12, height = 6)
+```
+
+
+##multivariate cox
+```{r}
+get_vars_cox <- function(cox_model)
+{
+  beta <- coef(cox_model)
+ci   <- confint(cox_model)
+pval <- summary(cox_model)$coefficients[, "Pr(>|z|)"]
+
+  variable = names(beta)
+  estimate = round(exp(beta), 2)
+  CI_low   = round(exp(ci[, 1]), 2)
+  CI_high  = round(exp(ci[, 2]), 2)
+ # p_value = formatC(pval, format = "e", digits = 2)
+  p_value = round(pval, 3)
+
+  estimates <- c()
+  for(var in variable)
+  {
+    if (length(variable) == 1)
+    {
+          value <- paste(estimate[var], " [", (CI_low), " - ", (CI_high), "]", " p = ", p_value, sep = "")
+    }
+    else
+    {
+          value <- paste(estimate[var], " [", (CI_low[var]), " - ", (CI_high[var]), "]", " p = ", p_value[var], sep = "")
+    }
+    #print(var)
+
+    #print(value)
+    estimates <- c(estimates, value)
+  }
+  return (estimates)
+}
+estimates <- get_vars_cox(individual_cox_2)
+print(estimates)
+```
+
+
+```{r}
+pre_mice_rt <- pre_mice %>% filter(radiotherapy == "yes")
+complete_cases_rt <- pre_mice_rt #%>% drop_na(any_of(c("type", "merged_stage", "age", "gender")))
+complete_cases_rt <- complete_cases_rt %>% filter(PFI.time != 0)
+
+for (typeC in examine_types)
+{
+  typeData <- complete_cases_rt %>% filter(type == typeC)
+  four_fifths <- sum(typeData$PFI) * 4/5
+  epp10 = 10
+  epp20 = 20
+  degrees_freedom_10 = four_fifths/epp10
+  degrees_freedom_20 = four_fifths/epp20
+  print(paste(typeC, four_fifths, degrees_freedom_10, degrees_freedom_20))
+}
+pca_numbers_10 <- c(7, 5, 10, 12, 7, 10, 4, 6)
+pca_numbers_20 <- c(3, 2, 5, 6, 4, 5, 2, 3)
+```
+
+
+```{r}
+generate_PC_formula <- function(numPCA)
+{
+  numbers <- 1:(numPCA-1)
+  PCs <- rep("PC", numPCA-1)
+  finalPC <- paste("PC", numPCA, sep = "")
+  return(as.formula(paste("Surv(PFI.time, PFI) ~", paste(PCs, numbers, " + ", sep = "", collapse = ""), finalPC)))
+}
+validate_and_return_c <- function(coxmodel, nboot)
+{
+  tryCatch(val <- validate(coxmodel, B = nboot, conf.int = 0.95), error = function(e){return(NA)})
+  tryCatch(val['Dxy', 'index.corrected']/2, error = function(e){return(NA)})
+  
+  estimate <- val['Dxy', 'index.corrected']/2 + 1/2
+  low <- val['Dxy', 'Lower']/2 + 1/2
+  high <- val['Dxy', 'Upper']/2 + 1/2
+  
+  estimate <- round(estimate, 2)
+  low <- round(low, 2)
+  high <- round(high, 2)
+  
+  toreturn <- paste(estimate, " [", low, " - ", high, "]", sep = "")
+  
+  return(toreturn)
+}
+
+validate_and_return_r <- function(coxmodel, nboot)
+{
+  tryCatch(val <- validate(coxmodel, B = nboot, conf.int = 0.95), error = function(e){return(NA)})
+  tryCatch(val['R2', 'index.corrected']/2, error = function(e){return(NA)})
+  
+  estimate <- val['R2', 'index.corrected']
+  low <- val['R2', 'Lower']
+  high <- val['R2', 'Upper']
+  
+  estimate <- round(estimate, 2)
+  low <- round(low, 2)
+  high <- round(high, 2)
+  
+  toreturn <- paste(estimate, " [", low, " - ", high, "]", sep = "")
+  
+  return(toreturn)
+}
+```
+
+
+```{r warning = F}
+
+library(ggsurvfit)
+library(survminer)
+library(caret)
+
+nfolds = 5
+nboot = 500
+
+examine_types <-  c("BRCA", "CESC", "HNSC", "LGG", "LUAD","SKCM", "THCA", "UCEC")
+
+pre_mice_rt <- pre_mice %>% filter(radiotherapy == "yes")
+complete_cases_rt <- pre_mice_rt 
+complete_cases_rt <- complete_cases_rt %>% filter(PFI.time != 0)
+
+complete_cases_rt <- complete_cases_rt %>% mutate(type = as.character(type))
+complete_cases_rt <- complete_cases_rt %>% mutate(type = ifelse(type %in% examine_types, type, "OTHER"))
+complete_cases_rt <- complete_cases_rt %>% mutate(type = as.factor(type))
+
+plots = list()
+
+estimates_df_1 <- data.frame(matrix(ncol = 1, nrow = 8)) #ncol = 1, nrow = 8
+rownames(estimates_df_1) = examine_types
+colnames(estimates_df_1) = "pan-cancer"
+
+estimates_df_6 <- data.frame(matrix(ncol = 1, nrow = 8)) #ncol = 1, nrow = 8
+rownames(estimates_df_6) = examine_types
+colnames(estimates_df_6) = "per-cancer-100"
+
+estimates_df_7 <- data.frame(matrix(ncol = 1, nrow = 8)) #ncol = 1, nrow = 8
+rownames(estimates_df_7) = examine_types
+colnames(estimates_df_7) = "per-cancer-10EPP"
+
+estimates_df_8 <- data.frame(matrix(ncol = 1, nrow = 8)) #ncol = 1, nrow = 8
+rownames(estimates_df_8) = examine_types
+colnames(estimates_df_8) = "per-cancer-20EPP"
+
+estimates_df_2 <- data.frame(matrix(ncol = 6, nrow = 8)) #ncol = 6, nrow = 8)
+rownames(estimates_df_2) = examine_types
+colnames(estimates_df_2) = c("pan-cancer", "age", "stage2", "stage3", "stage4", "male")
+
+estimates_df_3 <- data.frame(matrix(ncol = 7, nrow = 8)) #ncol = 6, nrow = 8)
+rownames(estimates_df_3) = examine_types
+colnames(estimates_df_3) = c("pan-cancer", "per-cancer", "age", "stage2", "stage3", "stage4", "male")
+
+estimates_df_4 <- data.frame(matrix(ncol = 7, nrow = 8)) #ncol = 6, nrow = 8)
+rownames(estimates_df_4) = examine_types
+colnames(estimates_df_4) = c("pan-cancer", "per-cancer", "age", "stage2", "stage3", "stage4", "male")
+
+estimates_df_5 <- data.frame(matrix(ncol = 7, nrow = 8)) #ncol = 6, nrow = 8)
+rownames(estimates_df_5) = examine_types
+colnames(estimates_df_5) = c("pan-cancer", "per-cancer", "age", "stage2", "stage3", "stage4", "male")
+
+total_df <- data.frame(matrix(ncol = 6, nrow = 8))
+colnames(total_df) <- c("clinical", "pan", "per", "clinical_pan", "clinical_per", "clinical_pan_per")
+rownames(total_df) <- examine_types
+
+r2_df <- data.frame(matrix(ncol = 6, nrow = 8))
+colnames(r2_df) <- c("clinical", "pan", "per", "clinical_pan", "clinical_per", "clinical_pan_per")
+rownames(r2_df) <- examine_types
+
+typeCounter = 1
+for (typeC in examine_types)
+{
+    print(typeC)
+  type_data <- complete_cases_rt %>% filter(type == typeC) #cases of the evaluation type
+  non_type_data <- complete_cases_rt %>% filter(type != typeC) #all other cases
+  
+  #pan-cancer predictions
+  formula_all <- as.formula(paste("Surv(PFI.time, PFI) ~", paste(all_genes,  collapse = " + "), "+ type"))
+  cox_pan_cancer <- coxph(formula_all, data = non_type_data)
+    
+  test_pan_predictions <- predict(cox_pan_cancer, type = "lp", newdata = type_data)
+    test_pan_predictions <- as.numeric(test_pan_predictions)
+    type_data$pan_predictions <- test_pan_predictions
+   
+    sd_pan <- sd(type_data$pan_predictions)
+    type_data <- type_data %>% mutate(pan_predictions = pan_predictions/sd_pan) #STANDARDIZE FOR INTERPRETATION
+    
+  individual_cox <- coxph(Surv(PFI.time, PFI) ~ pan_predictions, data = type_data)
+
+  #per-cancer, full model
+  folds <- createFolds(type_data$PFI, list = T, k = nfolds) #create folds of per-cancer data
+  
+  hold_predictions <- data.frame()
+  
+  pca_explained_10 <- c()
+  pca_explained_20 <- c()
+  
+    for (i in 1:nfolds) #do per-cancer cross validated predictions
+  {
+    train_fold <- type_data[-as.numeric(unlist(folds[i])),] 
+     test_fold <- type_data[as.numeric(unlist(folds[i])),]
+    
+     #get basic model
+      formula_all <- as.formula(paste("Surv(PFI.time, PFI) ~", paste(all_genes,  collapse = " + ")))
+     cox_per_cancer <- coxph(formula_all, data = train_fold)
+     
+     per_predictions <- predict(cox_per_cancer, type = "lp", newdata = test_fold)
+     test_fold$per_predictions = per_predictions
+     
+     #PCA models
+    lengthPCA_10 = pca_numbers_10[typeCounter]
+    lengthPCA_20 = pca_numbers_20[typeCounter]
+    pca_formula_10 <- generate_PC_formula(lengthPCA_10)
+    pca_formula_20 <- generate_PC_formula(lengthPCA_20)
+     
+    train_fold_selected <- train_fold %>% dplyr::select(all_of(all_genes))
+    test_fold_selected <- test_fold %>% dplyr::select(all_of(all_genes))
+      
+    #transformation calculated from train only
+    pca_preprocess_params <- preProcess(train_fold_selected, method = c("center", "scale"))
+    #apply transformation to both train and test
+    train_scaled <- predict(pca_preprocess_params, train_fold_selected)
+    test_scaled <- predict(pca_preprocess_params, test_fold_selected)
+
+    #fit PCA model
+    pca_model <- prcomp(train_scaled, center = FALSE, scale. = FALSE) #no need to transform already done
+    s <- summary(pca_model)
+    pca_explained_10 <- c(pca_explained_10, s$importance['Cumulative Proportion', lengthPCA_10]) #cumulative explained
+    pca_explained_20 <- c(pca_explained_20, s$importance['Cumulative Proportion', lengthPCA_20]) #cumulative explained
+    
+    #get PCA space for train and test
+    train_pca_coords <- predict(pca_model, newdata = train_scaled)
+    test_pca_coords <- predict(pca_model, newdata = test_scaled)
+  
+    #grab lengthPCA components
+    final_train_data <- train_pca_coords[, 1:lengthPCA_10] #this is the bigger number params (vs 20)
+    final_test_data <- test_pca_coords[, 1:lengthPCA_10]
+    train_fold <- cbind(train_fold, final_train_data)
+    test_fold <- cbind(test_fold, final_test_data)
+
+    cox_pca_10 <- coxph(pca_formula_10, data = train_fold) #ALT 1 - NO ADJUSTMENT
+    test_predictions_10 <- predict(cox_pca_10, newdata = test_fold)
+
+    cox_pca_20 <- coxph(pca_formula_20, data = train_fold) #ALT 1 - NO ADJUSTMENT
+    test_predictions_20 <- predict(cox_pca_20, newdata = test_fold)
+    
+    test_fold$per_predictions_2 <- test_predictions_10
+    test_fold$per_predictions_3 <- test_predictions_20
+  
+    #merge in
+    hold_predictions <- rbind(hold_predictions, test_fold)
+  
+    }
+  
+  pca_explained_10 <- mean(pca_explained_10)
+  print(paste("PCA 10:", pca_explained_10))
+  pca_explained_20 <- mean(pca_explained_20)
+  print(paste("PCA 20:", pca_explained_20))
+  
+  hold_predictions <- hold_predictions %>% dplyr::select(case, per_predictions, per_predictions_2, per_predictions_3)
+  type_data <- left_join(type_data, hold_predictions, by = join_by(case))
+  
+  #for per-cancer evaluation, need to drop
+    type_data <- type_data %>% drop_na(any_of(c("type", "merged_stage", "age", "gender"))) 
+
+   
+      if (typeC == "BRCA" || typeC == "CESC" || typeC == "UCEC") #sex-specific cancers, no gender var
+     {
+          individual_cox_2 <- coxph(Surv(PFI.time, PFI) ~ pan_predictions + age + merged_stage, data = type_data)
+          individual_cox_3 <- coxph(Surv(PFI.time, PFI) ~ pan_predictions + per_predictions + age + merged_stage, data = type_data)
+                    individual_cox_4 <- coxph(Surv(PFI.time, PFI) ~ pan_predictions + per_predictions_2 + age + merged_stage, data = type_data)
+                     individual_cox_5 <- coxph(Surv(PFI.time, PFI) ~ pan_predictions + per_predictions_3 + age + merged_stage, data = type_data)
+      }else
+      {
+        individual_cox_2 <- coxph(Surv(PFI.time, PFI) ~ pan_predictions + age + merged_stage + gender, data = type_data)
+         individual_cox_3 <- coxph(Surv(PFI.time, PFI) ~ pan_predictions + per_predictions + age + merged_stage + gender, data = type_data)
+                  individual_cox_4 <- coxph(Surv(PFI.time, PFI) ~ pan_predictions + per_predictions_2 + age + merged_stage + gender, data = type_data)
+                  individual_cox_5 <- coxph(Surv(PFI.time, PFI) ~ pan_predictions + per_predictions_3 + age + merged_stage + gender, data = type_data)
+      }
+    
+      individual_cox_6 <- coxph(Surv(PFI.time, PFI) ~ per_predictions, data = type_data)
+      individual_cox_7 <- coxph(Surv(PFI.time, PFI) ~ per_predictions_2, data = type_data)
+      individual_cox_8 <- coxph(Surv(PFI.time, PFI) ~ per_predictions_3, data = type_data)
+  
+  estimates_1 <- get_vars_cox(individual_cox)
+  estimates_2 <- get_vars_cox(individual_cox_2)
+  estimates_3 <- get_vars_cox(individual_cox_3)
+   estimates_4 <- get_vars_cox(individual_cox_4)
+   estimates_5 <- get_vars_cox(individual_cox_5)
+   
+     estimates_6 <- get_vars_cox(individual_cox_6)
+       estimates_7 <- get_vars_cox(individual_cox_7)
+         estimates_8 <- get_vars_cox(individual_cox_8)
+  
+  if (length(estimates_2) == 5) #if no gender var
+  {
+    estimates_2 <- c(estimates_2, NA)
+  }
+  
+    if (length(estimates_3) == 6) #if no gender var
+  {
+    estimates_3 <- c(estimates_3, NA)
+    }
+   
+       if (length(estimates_4) == 6) #if no gender var
+  {
+    estimates_4 <- c(estimates_4, NA)
+  }
+  
+          if (length(estimates_5) == 6) #if no gender var
+  {
+    estimates_5 <- c(estimates_5, NA)
+  }
+  
+  
+  #print(estimates_3)
+  estimates_df_1[typeCounter,] = estimates_1
+   estimates_df_2[typeCounter,] = estimates_2
+   estimates_df_3[typeCounter,] = estimates_3
+  estimates_df_4[typeCounter,] = estimates_4
+   estimates_df_5[typeCounter,] = estimates_5
+    estimates_df_6[typeCounter,] = estimates_6
+    estimates_df_7[typeCounter,] = estimates_7
+    estimates_df_8[typeCounter,] = estimates_8
+    
+
+    type_data <- droplevels(type_data) #gets rid of missing category problem
+
+    if (typeC == "BRCA" || typeC == "CESC" || typeC == "UCEC") #sex-specific cancers, no gender var
+     {
+    
+          clinical <- cph(Surv(PFI.time, PFI) ~ merged_stage + age, data = type_data, x = T, y = T)
+          pan <- cph(Surv(PFI.time, PFI) ~ pan_predictions, data = type_data, x = T, y = T)
+          per <- cph(Surv(PFI.time, PFI) ~ per_predictions_2, data = type_data, x = T, y = T)
+          clinical_pan <- cph(Surv(PFI.time, PFI) ~ merged_stage + age + pan_predictions, data = type_data, x = T, y = T)
+          clinical_per <- cph(Surv(PFI.time, PFI) ~ merged_stage + age + per_predictions_2, data = type_data, x = T, y = T)
+          clinical_pan_per <- cph(Surv(PFI.time, PFI) ~ merged_stage + age + per_predictions_2 + pan_predictions, data = type_data, x = T, y = T)
+      }else
+      {
+        
+          clinical <- cph(Surv(PFI.time, PFI) ~ merged_stage + age + gender, data = type_data, x = T, y = T)
+          pan <- cph(Surv(PFI.time, PFI) ~ pan_predictions, data = type_data, x = T, y = T)
+          per <- cph(Surv(PFI.time, PFI) ~ per_predictions_2, data = type_data, x = T, y = T)
+          clinical_pan <- cph(Surv(PFI.time, PFI) ~ merged_stage + age + gender + pan_predictions, data = type_data, x = T, y = T)
+          clinical_per <- cph(Surv(PFI.time, PFI) ~ merged_stage + age + gender + per_predictions_2, data = type_data, x = T, y = T)
+          clinical_pan_per <- cph(Surv(PFI.time, PFI) ~ merged_stage + age + gender + per_predictions_2 + pan_predictions, data = type_data, x = T, y = T)
+         
+      }
+    
+      result_list_c <- c(validate_and_return_c(clinical, nboot), 
+                       validate_and_return_c(pan, nboot), 
+                       validate_and_return_c(per, nboot), 
+                       validate_and_return_c(clinical_pan, nboot), 
+                       validate_and_return_c(clinical_per, nboot), 
+                       validate_and_return_c(clinical_pan_per, nboot))
+      
+      total_df[typeCounter, ] = result_list_c
+      
+            result_list_r <- c(validate_and_return_r(clinical, nboot), 
+                       validate_and_return_r(pan, nboot), 
+                       validate_and_return_r(per, nboot), 
+                       validate_and_return_r(clinical_pan, nboot), 
+                       validate_and_return_r(clinical_per, nboot), 
+                       validate_and_return_r(clinical_pan_per, nboot))
+      
+      r2_df[typeCounter, ] = result_list_r
+      
+      
+  typeCounter = typeCounter + 1
+}
+```
+
+
+
+```{r}
+write.csv(estimates_df_1, "estimates_1.csv")
+write.csv(estimates_df_2, "estimates_2.csv")
+write.csv(estimates_df_3, "estimates_3.csv")
+write.csv(estimates_df_4, "estimates_4.csv")
+write.csv(estimates_df_5, "estimates_5.csv")
+write.csv(estimates_df_6, "estimates_6.csv")
+write.csv(estimates_df_7, "estimates_7.csv")
+write.csv(estimates_df_8, "estimates_8.csv")
+write.csv(total_df, "total_df.csv")
+write.csv(r2_df, "r2_df.csv")
+```
+
+
+
+
+
+
