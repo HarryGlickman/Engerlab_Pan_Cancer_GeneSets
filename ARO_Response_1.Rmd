@@ -606,7 +606,19 @@ scaled_df <- complete_cases_rt %>% mutate(across(all_genes, ~scale(., center = T
 formula_all <- as.formula(paste("Surv(PFI.time, PFI) ~", paste(all_genes,  collapse = " + "), "+ type"))
 cox_all <- coxph(formula_all, data = scaled_df)
 summary(cox_all)
+
 ```
+
+```{r}
+cox.zph(cox_all)
+plot(cox.zph(cox_all))
+plot(predict(cox_all), residuals(cox_all, type="martingale"), 
+     xlab="Predicted Value", ylab="Martingale Residuals")
+ggcoxdiagnostics(cox_all, type = , linear.predictions = TRUE)
+ggcoxdiagnostics(cox_all, type = "dfbeta",
+                 linear.predictions = FALSE, ggtheme = theme_bw())
+```
+
 
 ```{r}
 #plot pan cancer coxph
@@ -831,18 +843,20 @@ pval <- summary(cox_model)$coefficients[, "Pr(>|z|)"]
   CI_low   = round(exp(ci[, 1]), 2)
   CI_high  = round(exp(ci[, 2]), 2)
  # p_value = formatC(pval, format = "e", digits = 2)
-  p_value = round(pval, 3)
+  #p_value = round(pval, 3)
+  p_value <- ifelse(pval < 0.001, "p < 0.001",
+                         paste("p = ", formatC(pval, format = "f", digits = 3), sep = ""))
 
   estimates <- c()
   for(var in variable)
   {
     if (length(variable) == 1)
     {
-          value <- paste(estimate[var], " [", (CI_low), " - ", (CI_high), "]", " p = ", p_value, sep = "")
+          value <- paste(estimate[var], " [", (CI_low), " - ", (CI_high), "]", " ", p_value, sep = "")
     }
     else
     {
-          value <- paste(estimate[var], " [", (CI_low[var]), " - ", (CI_high[var]), "]", " p = ", p_value[var], sep = "")
+          value <- paste(estimate[var], " [", (CI_low[var]), " - ", (CI_high[var]), "]", " ", p_value[var], sep = "")
     }
     #print(var)
 
@@ -930,6 +944,7 @@ library(caret)
 
 nfolds = 5
 nboot = 500
+nrepeats = 10
 
 examine_types <-  c("BRCA", "CESC", "HNSC", "LGG", "LUAD","SKCM", "THCA", "UCEC")
 
@@ -1004,14 +1019,17 @@ for (typeC in examine_types)
   individual_cox <- coxph(Surv(PFI.time, PFI) ~ pan_predictions, data = type_data)
 
   #per-cancer, full model
-  folds <- createFolds(type_data$PFI, list = T, k = nfolds) #create folds of per-cancer data
+  repeat_predictions <- data.frame()
+  for (repI in 1:nrepeats)
+  {
+      folds <- createFolds(type_data$PFI, list = T, k = nfolds) #create folds of per-cancer data
+      
+      hold_predictions <- data.frame()
   
-  hold_predictions <- data.frame()
+      pca_explained_10 <- c()
+      pca_explained_20 <- c()
   
-  pca_explained_10 <- c()
-  pca_explained_20 <- c()
-  
-    for (i in 1:nfolds) #do per-cancer cross validated predictions
+     for (i in 1:nfolds) #do per-cancer cross validated predictions
   {
     train_fold <- type_data[-as.numeric(unlist(folds[i])),] 
      test_fold <- type_data[as.numeric(unlist(folds[i])),]
@@ -1065,16 +1083,30 @@ for (typeC in examine_types)
   
     #merge in
     hold_predictions <- rbind(hold_predictions, test_fold)
-  
     }
+      
+    hold_predictions <- hold_predictions %>% dplyr::select(case, per_predictions, per_predictions_2, per_predictions_3)
+    repeat_predictions <- rbind(repeat_predictions, hold_predictions)
+    # pca_explained_10 <- mean(pca_explained_10)
+    # print(paste("PCA 10:", pca_explained_10))
+    # pca_explained_20 <- mean(pca_explained_20)
+    # print(paste("PCA 20:", pca_explained_20))
+    
+    
+    
+  }
+   
+    repeat_predictions <- repeat_predictions %>% group_by(case) %>% summarise(per_predictions = mean(per_predictions, na.rm = TRUE),
+    per_predictions_2 = mean(per_predictions_2, na.rm = TRUE),
+    per_predictions_3 = mean(per_predictions_3, na.rm = TRUE))
   
-  pca_explained_10 <- mean(pca_explained_10)
-  print(paste("PCA 10:", pca_explained_10))
-  pca_explained_20 <- mean(pca_explained_20)
-  print(paste("PCA 20:", pca_explained_20))
-  
-  hold_predictions <- hold_predictions %>% dplyr::select(case, per_predictions, per_predictions_2, per_predictions_3)
   type_data <- left_join(type_data, hold_predictions, by = join_by(case))
+  
+  #standardize per
+      sd_per1 <- sd(type_data$per_predictions)
+      sd_per2 <- sd(type_data$per_predictions_2)
+      sd_per3 <- sd(type_data$per_predictions_3)
+    type_data <- type_data %>% mutate(per_predictions = per_predictions/sd_per1, per_predictions_2 = per_predictions_2/sd_per2, per_predictions_3 = per_predictions_3/sd_per3) #STANDARDIZE FOR INTERPRETATION
   
   #for per-cancer evaluation, need to drop
     type_data <- type_data %>% drop_na(any_of(c("type", "merged_stage", "age", "gender"))) 
@@ -1202,7 +1234,30 @@ write.csv(r2_df, "r2_df.csv")
 ```
 
 
+```{r}
+estimates_df_6 
+estimates_df_7
+estimates_df_8
+estimates_df_3
+estimates_df_4
+estimates_df_5
+```
 
+```{r}
+df6 <- as.data.frame(t(estimates_df_6))
+df7 <- as.data.frame(t(estimates_df_7))
+df8 <- as.data.frame(t(estimates_df_8))
+df3 <- as.data.frame(t(estimates_df_3))
+df4 <- as.data.frame(t(estimates_df_4))
+df5 <- as.data.frame(t(estimates_df_5))
+all_df <- rbind(df6, df3, df7, df4, df8, df5)
+View(all_df)
+write.csv(all_df, "per_cancer_results.csv")
+```
+
+```{r}
+
+```
 
 
 
